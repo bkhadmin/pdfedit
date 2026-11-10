@@ -1,0 +1,5 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// base './' so the built index.html loads assets over file:// inside Electron
+export default defineConfig({ plugins: [react()], base: './' })
