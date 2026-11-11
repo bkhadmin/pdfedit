@@ -3,15 +3,38 @@ import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDFDocument } from 'pdf-lib'
 import SignaturePad from './SignaturePad'
+import CertModal from './CertModal'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 const SCALE = 1.5 // screen px per PDF point
 const FALLBACK_FONTS = ['Tahoma', 'Leelawadee UI', 'Angsana New', 'Cordia New', 'TH Sarabun New', 'Arial']
+const ICONS = {
+  open: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  add: 'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M12 12v6M9 15h6',
+  sign: 'M3 21c3-6 5-6 6-3s3 0 4-2 2-1 3 1M15 4l5 5-8 8H7v-5z',
+  text: 'M5 6V4h14v2M12 4v16M9 20h6',
+  undo: 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3',
+  print: 'M7 9V3h10v6M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M7 14h10v7H7z',
+  save: 'M12 3v12M7 10l5 5 5-5M5 21h14',
+  cert: 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6zM9 12l2 2 4-4',
+}
+const Icon = ({ name }) => (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d={ICONS[name]} />
+  </svg>
+)
+
+const Tool = ({ icon, label, onClick, off, primary }) => (
+  <button className={'tool' + (primary ? ' primary' : '')} onClick={onClick} disabled={off} title={label}>
+    <Icon name={icon} />
+    <span>{label}</span>
+  </button>
+)
 
 // Text becomes a PNG so any installed font works, Thai included (pdf-lib standard fonts have no Thai glyphs).
 // shortcut: text isn't selectable/searchable in the output, embed the TTF via @pdf-lib/fontkit if needed.
 // Baseline sits at 1.1 * size from the stamp's top. bg = optional solid background color.
-function textToStamp(text, family, size, bg) {
+function textToStamp(text, family, size, color = '#000000', bg) {
   const px = size * 3 // render at 3x for print quality
   const font = `${px}px "${family}"`
   const c = document.createElement('canvas')
@@ -22,31 +45,48 @@ function textToStamp(text, family, size, bg) {
   if (bg) {
     ctx.fillStyle = bg
     ctx.fillRect(0, 0, c.width, c.height)
-    ctx.fillStyle = '#000'
   }
+  ctx.fillStyle = color
   ctx.font = font
   ctx.fillText(text, px * 0.1, px * 1.1)
   return { src: c.toDataURL('image/png'), w: c.width / 3, h: c.height / 3 }
 }
 
+function download(bytes, name) {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
+  a.download = name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+}
+
 export default function App() {
   const [file, setFile] = useState(null) // { name, bytes }
   const [pages, setPages] = useState([]) // [{ w, h }] in PDF points
-  const [items, setItems] = useState([]) // [{ id, page, x, y, w, h, src, text?, font?, size?, cover? }] PDF points, y from top; text set = editable text
+  const [items, setItems] = useState([]) // [{ id, page, x, y, w, h, src, text?, font?, size?, color?, cover? }] PDF points, y from top
   const [stamp, setStamp] = useState(null) // stamp waiting to be placed by click
-  const [text, setText] = useState('')
   const [fonts, setFonts] = useState(FALLBACK_FONTS)
+  // last-used text settings, shown in the text modal
   const [font, setFont] = useState('Tahoma')
   const [size, setSize] = useState(16)
+  const [color, setColor] = useState('#000000')
   const [cover, setCover] = useState(false) // opaque text background matching the PDF underneath
-  const [editing, setEditing] = useState(null) // { id, value } of the text item open in the modal
+  const [editing, setEditing] = useState(null) // { id (null = new text), value }
   const [padOpen, setPadOpen] = useState(false)
+  const [certOpen, setCertOpen] = useState(false)
+  const [menu, setMenu] = useState(null)
+  const [busy, setBusy] = useState('')
+  const [undoCount, setUndoCount] = useState(0)
   const pdfRef = useRef(null)
   const canvases = useRef([])
   const thumbs = useRef([])
   const dragPage = useRef(null)
   const drag = useRef(null)
   const mainRef = useRef(null)
+  const openRef = useRef(null)
+  const appendRef = useRef(null)
+  const history = useRef([]) // snapshots of { file, items } taken before each change
+  const lastSnap = useRef({})
 
   // React's onWheel is passive, so stop the page scrolling here while resizing an item
   useEffect(() => {
@@ -61,6 +101,31 @@ export default function App() {
       .then((list) => list.length && setFonts([...new Set(list.map((f) => f.family))].sort()))
       .catch(() => {}) // keep fallback list (e.g. plain browser without permission)
   }, [])
+
+  useEffect(() => {
+    const close = () => setMenu(null)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [])
+
+  // snapshot before a change; same key within 1s (e.g. wheel ticks) collapses into one undo step
+  function snap(key) {
+    const now = Date.now()
+    const last = lastSnap.current
+    lastSnap.current = { key, t: now }
+    if (key && key === last.key && now - last.t < 1000) return
+    history.current.push({ file, items })
+    if (history.current.length > 50) history.current.shift()
+    setUndoCount(history.current.length)
+  }
+
+  async function undo() {
+    const s = history.current.pop()
+    setUndoCount(history.current.length)
+    if (!s) return
+    if (s.file !== file) await loadPdf(s.file)
+    setItems(s.items)
+  }
 
   // append = add the chosen files after the current document's pages (placed items keep their pages)
   async function openFiles(e, append) {
@@ -79,22 +144,27 @@ export default function App() {
         }
         bytes = await doc.save()
       }
-      await loadPdf(append ? file.name : files[0].name, bytes)
-      if (!append) setItems([])
+      if (append) snap()
+      await loadPdf({ name: append ? file.name : files[0].name, bytes })
+      if (!append) {
+        setItems([])
+        history.current = []
+        setUndoCount(0)
+      }
     } catch (err) {
       alert('เปิดไฟล์ไม่ได้: ' + err.message)
     }
   }
 
-  async function loadPdf(name, bytes) {
-    const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise // pdf.js detaches its buffer
+  async function loadPdf(f) {
+    const pdf = await pdfjs.getDocument({ data: f.bytes.slice() }).promise // pdf.js detaches its buffer
     const out = []
     for (let i = 1; i <= pdf.numPages; i++) {
       const vp = (await pdf.getPage(i)).getViewport({ scale: 1 })
       out.push({ w: vp.width, h: vp.height })
     }
     pdfRef.current = pdf
-    setFile({ name, bytes })
+    setFile(f)
     setEditing(null)
     setPages(out)
   }
@@ -106,7 +176,9 @@ export default function App() {
       const all = doc.getPages()
       for (let i = all.length - 1; i >= 0; i--) doc.removePage(i)
       for (const o of order) doc.addPage(all[o]) // re-adding the same page objects keeps links/annotations
-      await loadPdf(file.name, await doc.save())
+      const bytes = await doc.save()
+      snap()
+      await loadPdf({ name: file.name, bytes })
       setItems((its) => its.filter((it) => order.includes(it.page)).map((it) => ({ ...it, page: order.indexOf(it.page) })))
     } catch (err) {
       alert('จัดหน้าไม่สำเร็จ: ' + err.message)
@@ -154,8 +226,12 @@ export default function App() {
     }
   }, [pages])
 
-  const add = (...its) => setItems((old) => [...old, ...its.map((it) => ({ ...it, id: crypto.randomUUID() }))])
+  const add = (it) => setItems((old) => [...old, { ...it, id: crypto.randomUUID() }])
   const update = (id, fn) => setItems((its) => its.map((it) => (it.id === id ? { ...it, ...fn(it) } : it)))
+  const remove = (id) => {
+    snap()
+    setItems((its) => its.filter((o) => o.id !== id))
+  }
 
   function onPageClick(e, page) {
     if (!stamp) return
@@ -163,6 +239,7 @@ export default function App() {
     const px = (e.clientX - r.left) / SCALE
     const py = (e.clientY - r.top) / SCALE
     const it = { ...stamp, page, x: px - stamp.w / 2, y: py - stamp.h / 2 }
+    snap()
     add(it.cover ? { ...it, ...renderText(it) } : it) // background color is only known once placed
     setStamp(null)
   }
@@ -178,40 +255,44 @@ export default function App() {
     const p = c.getContext('2d').getImageData(x0, y0, x1 - x0, y1 - y0).data
     const count = new Map()
     let best = 0
-    let color = '#fff'
+    let bg = '#fff'
     for (let i = 0; i < p.length; i += 4) {
       const key = ((p[i] >> 3) << 10) | ((p[i + 1] >> 3) << 5) | (p[i + 2] >> 3) // bucket near-identical shades
       const n = (count.get(key) || 0) + 1
       count.set(key, n)
-      if (n > best) [best, color] = [n, `rgb(${p[i]},${p[i + 1]},${p[i + 2]})`]
+      if (n > best) [best, bg] = [n, `rgb(${p[i]},${p[i + 1]},${p[i + 2]})`]
     }
-    return color
+    return bg
   }
 
   // PNG fields for a text item; with cover on, background = the PDF's color at the item's current spot
   function renderText(o) {
-    const s = textToStamp(o.text, o.font, o.size)
-    return o.cover ? textToStamp(o.text, o.font, o.size, sampleBg(o.page, o.x, o.y, s.w, s.h)) : s
+    const s = textToStamp(o.text, o.font, o.size, o.color)
+    return o.cover ? textToStamp(o.text, o.font, o.size, o.color, sampleBg(o.page, o.x, o.y, s.w, s.h)) : s
   }
-
-  const textStamp = (value) => ({ ...textToStamp(value, font, size), text: value, font, size, cover })
-  const remove = (id) => setItems((its) => its.filter((o) => o.id !== id))
 
   function startEdit(it) {
     setFont(it.font)
     setSize(it.size)
+    setColor(it.color || '#000000')
     setCover(!!it.cover)
     setEditing({ id: it.id, value: it.text })
   }
 
   function commitEdit() {
     const { id, value } = editing
-    if (value.trim()) update(id, (o) => {
-      const n = { ...o, text: value, font, size, cover } // keeps x/y
-      return { ...n, ...renderText(n) }
-    })
-    else remove(id)
+    const props = { text: value, font, size, color, cover }
     setEditing(null)
+    if (!id) {
+      if (value.trim()) setStamp({ ...textToStamp(value, font, size, color), ...props }) // placed by the next page click
+    } else if (!value.trim()) remove(id)
+    else {
+      snap()
+      update(id, (o) => {
+        const n = { ...o, ...props } // keeps x/y
+        return { ...n, ...renderText(n) }
+      })
+    }
   }
 
   function onPointerDown(e, it) {
@@ -224,8 +305,11 @@ export default function App() {
     if (!d || d.done) return
     const dx = e.clientX - d.sx
     const dy = e.clientY - d.sy
-    if (Math.hypot(dx, dy) > 3) d.moved = true // a real drag shouldn't also open the edit modal
-    update(d.id, () => ({ x: d.x + dx / SCALE, y: d.y + dy / SCALE }))
+    if (!d.moved && Math.hypot(dx, dy) > 3) {
+      d.moved = true // a real drag shouldn't also open the edit modal
+      snap()
+    }
+    if (d.moved) update(d.id, () => ({ x: d.x + dx / SCALE, y: d.y + dy / SCALE }))
   }
   function onPointerUp() {
     const d = drag.current
@@ -234,142 +318,270 @@ export default function App() {
     if (d.moved) update(d.id, (o) => (o.cover ? renderText(o) : {})) // re-sample background at the new spot
   }
 
+  function onWheel(e, it) {
+    const up = e.deltaY < 0
+    snap('wheel:' + it.id)
+    update(it.id, (o) => {
+      if (!o.text) return { w: o.w * (up ? 1.1 : 1 / 1.1), h: o.h * (up ? 1.1 : 1 / 1.1) }
+      // text: re-render at the new size instead of stretching the PNG, so it stays sharp
+      const s = Math.min(200, Math.max(4, o.size + (up ? 1 : -1)))
+      return { ...renderText({ ...o, size: s }), size: s }
+    })
+  }
+
+  // The document with every placed signature/text flattened into it.
+  async function buildPdf() {
+    const doc = await PDFDocument.load(file.bytes)
+    for (const it of items) {
+      const page = doc.getPage(it.page)
+      // shortcut: assumes no page rotation / cropbox offset, map through page.getRotation() if such PDFs show up
+      const box = { x: it.x, y: page.getHeight() - it.y - it.h, width: it.w, height: it.h }
+      page.drawImage(await doc.embedPng(it.src), box)
+    }
+    return doc.save()
+  }
+
+  const outName = (suffix) => file.name.replace(/\.pdf$/i, '') + suffix + '.pdf'
+
   async function save() {
     try {
-      const doc = await PDFDocument.load(file.bytes)
-      for (const it of items) {
-        const page = doc.getPage(it.page)
-        // shortcut: assumes no page rotation / cropbox offset, map through page.getRotation() if such PDFs show up
-        const box = { x: it.x, y: page.getHeight() - it.y - it.h, width: it.w, height: it.h }
-        page.drawImage(await doc.embedPng(it.src), box)
-      }
-      const out = await doc.save()
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(new Blob([out], { type: 'application/pdf' }))
-      a.download = file.name.replace(/\.pdf$/i, '') + '-signed.pdf'
-      a.click()
-      URL.revokeObjectURL(a.href)
+      download(await buildPdf(), outName('-edited'))
     } catch (err) {
       alert('บันทึกไม่สำเร็จ: ' + err.message)
     }
   }
 
-  // shared by the toolbar and the edit modal
-  const fontPicker = (
-    <select value={font} onChange={(e) => setFont(e.target.value)} title="ฟอนต์">
-      {fonts.map((f) => <option key={f} value={f}>{f}</option>)}
-    </select>
-  )
-  const sizePicker = (
-    <input type="number" min="4" max="200" value={size} onChange={(e) => setSize(Math.max(4, +e.target.value || 4))} title="ขนาด (pt)" style={{ width: 56 }} />
-  )
-  const coverPicker = (
-    <label className="keep" title="ปิดของเดิมใต้ข้อความ ด้วยสีพื้นของเอกสารตรงจุดที่วาง">
-      <input type="checkbox" checked={cover} onChange={(e) => setCover(e.target.checked)} /> พื้นหลังทึบ
-    </label>
-  )
+  // Prints the flattened output (not the screen), rendered at 144 dpi into a hidden frame.
+  async function print() {
+    setBusy('กำลังเตรียมพิมพ์…')
+    try {
+      const pdf = await pdfjs.getDocument({ data: await buildPdf() }).promise
+      const imgs = []
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i)
+        const vp = page.getViewport({ scale: 2 })
+        const c = document.createElement('canvas')
+        c.width = vp.width
+        c.height = vp.height
+        await page.render({ canvas: c, viewport: vp }).promise
+        imgs.push(c.toDataURL('image/jpeg', 0.92))
+      }
+      const frame = document.createElement('iframe')
+      frame.style.cssText = 'position:fixed;width:0;height:0;border:0'
+      document.body.appendChild(frame)
+      const d = frame.contentDocument
+      d.open()
+      d.write(
+        '<style>@page{margin:0}body{margin:0}img{display:block;width:100%;height:100vh;object-fit:contain;break-after:page}</style>' +
+          imgs.map((s) => `<img src="${s}">`).join(''),
+      )
+      d.close()
+      await Promise.all([...d.images].map((im) => im.decode()))
+      frame.contentWindow.onafterprint = () => frame.remove()
+      setBusy('')
+      frame.contentWindow.print()
+    } catch (err) {
+      setBusy('')
+      alert('พิมพ์ไม่สำเร็จ: ' + err.message)
+    }
+  }
 
-  const hint = stamp
-    ? 'คลิกบนหน้าเอกสารเพื่อวาง'
-    : file
-      ? 'คลิกข้อความที่วางแล้วเพื่อแก้ · ลากเพื่อย้าย · หมุนล้อเมาส์เพื่อปรับขนาด · ดับเบิลคลิกลายเซ็นเพื่อลบ'
-      : ''
+  // keyboard shortcuts
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 'Escape') setStamp(null)
+      if (!e.ctrlKey || editing || padOpen || certOpen) return
+      const k = e.key.toLowerCase()
+      if (k === 'o') openRef.current.click()
+      else if (k === 'z' && !['INPUT', 'TEXTAREA'].includes(e.target.tagName)) undo()
+      else if (k === 's' && file) save()
+      else if (k === 'p' && file) print()
+      else return
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  const canCert = !!window.pdfedit // desktop app only (signing runs in Electron's main process)
+  const newText = () => setEditing({ id: null, value: '' })
+  const menus = {
+    ไฟล์: [
+      { label: 'เปิด PDF…', kbd: 'Ctrl+O', run: () => openRef.current.click() },
+      { label: 'เพิ่ม PDF ต่อท้าย…', run: () => appendRef.current.click(), off: !file },
+      '-',
+      { label: 'บันทึก', kbd: 'Ctrl+S', run: save, off: !file },
+      { label: canCert ? 'บันทึกพร้อมลายเซ็นดิจิทัล…' : 'ลายเซ็นดิจิทัล (เฉพาะโปรแกรม Windows)', run: () => setCertOpen(true), off: !file || !canCert },
+      '-',
+      { label: 'พิมพ์…', kbd: 'Ctrl+P', run: print, off: !file },
+    ],
+    แก้ไข: [{ label: 'ย้อนกลับ', kbd: 'Ctrl+Z', run: undo, off: !undoCount }],
+    แทรก: [
+      { label: 'ลายเซ็น…', run: () => setPadOpen(true), off: !file },
+      { label: 'ข้อความ…', run: newText, off: !file },
+    ],
+  }
+
+  const hint = busy
+    ? busy
+    : stamp
+      ? 'คลิกบนหน้าเอกสารเพื่อวาง · Esc = ยกเลิก'
+      : file
+        ? 'คลิกข้อความเพื่อแก้ · ลากเพื่อย้าย · หมุนล้อเมาส์เพื่อปรับขนาด · ดับเบิลคลิกลายเซ็นเพื่อลบ'
+        : ''
 
   return (
     <div className="app">
+      <input ref={openRef} type="file" accept="application/pdf" multiple hidden onChange={(e) => openFiles(e, false)} />
+      <input ref={appendRef} type="file" accept="application/pdf" multiple hidden onChange={(e) => openFiles(e, true)} />
+
       <header>
-        <label className="btn">
-          เปิด PDF
-          <input type="file" accept="application/pdf" multiple hidden onChange={(e) => openFiles(e, false)} />
-        </label>
-        <label className={'btn' + (file ? '' : ' disabled')} title="ต่อไฟล์ PDF อื่นท้ายเอกสารนี้ (เลือกได้หลายไฟล์ เรียงตามชื่อไฟล์)">
-          เพิ่ม PDF
-          <input type="file" accept="application/pdf" multiple hidden disabled={!file} onChange={(e) => openFiles(e, true)} />
-        </label>
-        <button disabled={!file} onClick={() => setPadOpen(true)}>เซ็นชื่อ</button>
-        {fontPicker}
-        {sizePicker}
-        {coverPicker}
-        <input disabled={!file} value={text} placeholder="ข้อความ" onChange={(e) => setText(e.target.value)} />
-        <button disabled={!file || !text} onClick={() => setStamp(textStamp(text))}>วางข้อความ</button>
-        <button disabled={!file} onClick={save}>บันทึก</button>
-        <span className="hint">{hint}</span>
+        <div className="titlebar">
+          <img src="./icon.png" alt="" className="logo" />
+          <b>PDF Edit</b>
+          <nav className="menubar">
+            {Object.entries(menus).map(([name, list]) => (
+              <div key={name} className="menu">
+                <button
+                  className={menu === name ? 'open' : ''}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setMenu(menu === name ? null : name)
+                  }}
+                  onMouseEnter={() => menu && setMenu(name)}
+                >
+                  {name}
+                </button>
+                {menu === name && (
+                  <div className="dropdown">
+                    {list.map((m, i) =>
+                      m === '-' ? (
+                        <hr key={i} />
+                      ) : (
+                        <button key={i} disabled={m.off} onClick={m.run}>
+                          <span>{m.label}</span>
+                          <kbd>{m.kbd}</kbd>
+                        </button>
+                      ),
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </nav>
+          {file && <span className="filename">{file.name}</span>}
+        </div>
+        <div className="toolbar">
+          <Tool icon="open" label="เปิด" onClick={() => openRef.current.click()} />
+          <Tool icon="add" label="เพิ่ม PDF" onClick={() => appendRef.current.click()} off={!file} />
+          <span className="sep" />
+          <Tool icon="sign" label="เซ็นชื่อ" onClick={() => setPadOpen(true)} off={!file} />
+          <Tool icon="text" label="ข้อความ" onClick={newText} off={!file} />
+          <span className="sep" />
+          <Tool icon="undo" label="ย้อนกลับ" onClick={undo} off={!undoCount} />
+          <span className="grow" />
+          <Tool icon="print" label="พิมพ์" onClick={print} off={!file} />
+          {canCert && <Tool icon="cert" label="ลายเซ็นดิจิทัล" onClick={() => setCertOpen(true)} off={!file} />}
+          <Tool icon="save" label="บันทึก" onClick={save} off={!file} primary />
+        </div>
       </header>
 
       <div className="body">
-      {pages.length > 0 && (
-        <aside className="thumbs">
-          {pages.map((_, i) => (
-            <div
-              key={i}
-              className="thumb"
-              draggable
-              title="ลากเพื่อสลับลำดับ · คลิกเพื่อไปที่หน้านี้"
-              onDragStart={() => (dragPage.current = i)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => movePage(dragPage.current, i)}
-              onClick={() => document.getElementById('page-' + i).scrollIntoView({ behavior: 'smooth' })}
-            >
-              <canvas ref={(el) => (thumbs.current[i] = el)} />
-              <div className="thumb-bar" onClick={(e) => e.stopPropagation()}>
-                <span>{i + 1}</span>
-                <button title="เลื่อนขึ้น" disabled={i === 0} onClick={() => movePage(i, i - 1)}>▲</button>
-                <button title="เลื่อนลง" disabled={i === pages.length - 1} onClick={() => movePage(i, i + 1)}>▼</button>
-                <button title="ลบหน้า" className="danger" disabled={pages.length === 1} onClick={() => deletePage(i)}>×</button>
+        {pages.length > 0 && (
+          <aside className="thumbs">
+            {pages.map((_, i) => (
+              <div
+                key={i}
+                className="thumb"
+                draggable
+                title="ลากเพื่อสลับลำดับ · คลิกเพื่อไปที่หน้านี้"
+                onDragStart={() => (dragPage.current = i)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => movePage(dragPage.current, i)}
+                onClick={() => document.getElementById('page-' + i).scrollIntoView({ behavior: 'smooth' })}
+              >
+                <canvas ref={(el) => (thumbs.current[i] = el)} />
+                <div className="thumb-bar" onClick={(e) => e.stopPropagation()}>
+                  <span>{i + 1}</span>
+                  <button title="เลื่อนขึ้น" disabled={i === 0} onClick={() => movePage(i, i - 1)}>▲</button>
+                  <button title="เลื่อนลง" disabled={i === pages.length - 1} onClick={() => movePage(i, i + 1)}>▼</button>
+                  <button title="ลบหน้า" className="danger" disabled={pages.length === 1} onClick={() => deletePage(i)}>×</button>
+                </div>
               </div>
+            ))}
+          </aside>
+        )}
+        <main ref={mainRef} onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
+          {!file && (
+            <div className="empty">
+              <img src="./icon.png" alt="" />
+              <h2>เปิดไฟล์ PDF เพื่อเริ่มต้น</h2>
+              <p>เซ็นชื่อ · ใส่ข้อความ · รวมไฟล์ · จัดหน้า · พิมพ์</p>
+              <button className="tool primary" onClick={() => openRef.current.click()}>
+                <Icon name="open" />
+                <span>เปิด PDF</span>
+              </button>
+            </div>
+          )}
+          {pages.map((p, i) => (
+            <div key={i} id={'page-' + i} className={'page' + (stamp ? ' placing' : '')} style={{ width: p.w * SCALE, height: p.h * SCALE }} onClick={(e) => onPageClick(e, i)}>
+              <canvas ref={(el) => (canvases.current[i] = el)} />
+              {items.filter((it) => it.page === i).map((it) => (
+                <img
+                  key={it.id}
+                  src={it.src}
+                  alt=""
+                  draggable={false}
+                  className={'item' + (it.text ? ' text' : '')}
+                  title={it.text ? 'คลิกเพื่อแก้' : 'ดับเบิลคลิกเพื่อลบ'}
+                  style={{ left: it.x * SCALE, top: it.y * SCALE, width: it.w * SCALE, height: it.h * SCALE }}
+                  onPointerDown={(e) => onPointerDown(e, it)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (it.text && !drag.current?.moved) startEdit(it)
+                  }}
+                  onWheel={(e) => onWheel(e, it)}
+                  onDoubleClick={() => !it.text && remove(it.id)}
+                />
+              ))}
             </div>
           ))}
-        </aside>
-      )}
-      <main ref={mainRef} onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
-        {pages.map((p, i) => (
-          <div key={i} id={'page-' + i} className={'page' + (stamp ? ' placing' : '')} style={{ width: p.w * SCALE, height: p.h * SCALE }} onClick={(e) => onPageClick(e, i)}>
-            <canvas ref={(el) => (canvases.current[i] = el)} />
-            {items.filter((it) => it.page === i).map((it) => (
-              <img
-                key={it.id}
-                src={it.src}
-                draggable={false}
-                className={'item' + (it.text ? ' text' : '')}
-                title={it.text ? 'คลิกเพื่อแก้' : undefined}
-                style={{ left: it.x * SCALE, top: it.y * SCALE, width: it.w * SCALE, height: it.h * SCALE }}
-                onPointerDown={(e) => onPointerDown(e, it)}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (it.text && !drag.current?.moved) startEdit(it)
-                }}
-                onWheel={(e) => {
-                  const up = e.deltaY < 0
-                  update(it.id, (o) => {
-                    if (!o.text) return { w: o.w * (up ? 1.1 : 1 / 1.1), h: o.h * (up ? 1.1 : 1 / 1.1) }
-                    // text: re-render at the new size instead of stretching the PNG, so it stays sharp
-                    const size = Math.min(200, Math.max(4, o.size + (up ? 1 : -1)))
-                    return { ...renderText({ ...o, size }), size }
-                  })
-                }}
-                onDoubleClick={() => !it.text && remove(it.id)}
-              />
-            ))}
-          </div>
-        ))}
-      </main>
+        </main>
       </div>
+
+      <footer>
+        <span>{file ? `${pages.length} หน้า` : 'ยังไม่ได้เปิดไฟล์'}</span>
+        <span className="hint">{hint}</span>
+      </footer>
 
       {editing && (
         <div className="modal" onKeyDown={(e) => e.key === 'Escape' && setEditing(null)}>
           <form className="pad edit-modal" onSubmit={(e) => { e.preventDefault(); commitEdit() }}>
-            <b>แก้ข้อความ</b>
-            <div>{fontPicker}{sizePicker}{coverPicker}</div>
+            <h3>{editing.id ? 'แก้ข้อความ' : 'แทรกข้อความ'}</h3>
+            <div className="row">
+              <select value={font} onChange={(e) => setFont(e.target.value)} title="ฟอนต์">
+                {fonts.map((f) => <option key={f} value={f}>{f}</option>)}
+              </select>
+              <input type="number" min="4" max="200" value={size} onChange={(e) => setSize(Math.max(4, +e.target.value || 4))} title="ขนาด (pt)" style={{ width: 60 }} />
+              <input type="color" value={color} onChange={(e) => setColor(e.target.value)} title="สีตัวอักษร" />
+              <label className="keep" title="ปิดของเดิมใต้ข้อความ ด้วยสีพื้นของเอกสารตรงจุดที่วาง">
+                <input type="checkbox" checked={cover} onChange={(e) => setCover(e.target.checked)} /> พื้นหลังทึบ
+              </label>
+            </div>
             <input
               autoFocus
+              className="text-input"
+              placeholder="พิมพ์ข้อความ"
               value={editing.value}
               onChange={(e) => setEditing({ ...editing, value: e.target.value })}
-              style={{ font: `${size * SCALE}px "${font}"` }}
+              style={{ font: `${size * SCALE}px "${font}"`, color }}
             />
-            <div>
-              <button type="button" className="danger" onClick={() => { remove(editing.id); setEditing(null) }}>ลบ</button>
+            <div className="row end">
+              {editing.id && (
+                <button type="button" className="danger" onClick={() => { remove(editing.id); setEditing(null) }}>ลบ</button>
+              )}
               <button type="button" onClick={() => setEditing(null)}>ยกเลิก</button>
-              <button type="submit">ตกลง</button>
+              <button type="submit" className="primary">{editing.id ? 'ตกลง' : 'วางบนเอกสาร'}</button>
             </div>
           </form>
         </div>
@@ -381,6 +593,17 @@ export default function App() {
           onDone={({ src, w, h }) => {
             setPadOpen(false)
             setStamp({ src, w, h })
+          }}
+        />
+      )}
+
+      {certOpen && (
+        <CertModal
+          onCancel={() => setCertOpen(false)}
+          onSign={async ({ p12, password, reason }) => {
+            const out = await window.pdfedit.signPdf({ pdf: await buildPdf(), p12, password, reason })
+            download(out, outName('-signed'))
+            setCertOpen(false)
           }}
         />
       )}

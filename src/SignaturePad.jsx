@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const KEY = 'pdfedit.signatures' // localStorage persists in Electron's userData, across PDFs and restarts
 
@@ -13,37 +13,43 @@ function loadSaved() {
 // Stamp is 160pt wide; height follows the image's aspect ratio.
 const toStamp = (src, iw, ih) => ({ src, w: 160, h: (160 * ih) / iw })
 
-// Uploaded scans/photos: shrink to <=800px wide (keeps storage small) and make near-white paper transparent.
-// shortcut: fixed white threshold, add a slider if photos with gray/shadowed paper leave a box.
-function imageToStamp(file) {
+function loadImage(file) {
   return new Promise((resolve, reject) => {
     const img = new Image()
-    img.onload = () => {
-      URL.revokeObjectURL(img.src)
-      const k = Math.min(1, 800 / img.width)
-      const c = document.createElement('canvas')
-      c.width = Math.round(img.width * k)
-      c.height = Math.round(img.height * k)
-      const ctx = c.getContext('2d')
-      ctx.drawImage(img, 0, 0, c.width, c.height)
-      const d = ctx.getImageData(0, 0, c.width, c.height)
-      const p = d.data
-      for (let i = 0; i < p.length; i += 4) if (p[i] > 200 && p[i + 1] > 200 && p[i + 2] > 200) p[i + 3] = 0
-      ctx.putImageData(d, 0, 0)
-      resolve(toStamp(c.toDataURL('image/png'), c.width, c.height))
-    }
+    img.onload = () => resolve(img)
     img.onerror = () => reject(new Error('อ่านไฟล์รูปไม่ได้'))
     img.src = URL.createObjectURL(file)
   })
 }
 
+// Uploaded scans/photos: shrink to <=800px wide (keeps storage small) and make paper transparent:
+// pixels whose R, G and B are all above `threshold` are treated as paper.
+function cutPaper(img, threshold, c = document.createElement('canvas')) {
+  const k = Math.min(1, 800 / img.width)
+  c.width = Math.round(img.width * k)
+  c.height = Math.round(img.height * k)
+  const ctx = c.getContext('2d')
+  ctx.drawImage(img, 0, 0, c.width, c.height)
+  const d = ctx.getImageData(0, 0, c.width, c.height)
+  const p = d.data
+  for (let i = 0; i < p.length; i += 4) if (p[i] > threshold && p[i + 1] > threshold && p[i + 2] > threshold) p[i + 3] = 0
+  ctx.putImageData(d, 0, 0)
+  return c
+}
+
 // Drawing canvas is 400x150, transparent background.
 export default function SignaturePad({ onDone, onCancel }) {
   const ref = useRef(null)
+  const preview = useRef(null)
   const drawing = useRef(false)
   const dirty = useRef(false)
   const [saved, setSaved] = useState(loadSaved)
   const [keep, setKeep] = useState(true)
+  const [upload, setUpload] = useState(null) // { img, threshold } while adjusting an uploaded image
+
+  useEffect(() => {
+    if (upload) cutPaper(upload.img, upload.threshold, preview.current)
+  }, [upload])
 
   function persist(list) {
     try {
@@ -59,14 +65,21 @@ export default function SignaturePad({ onDone, onCancel }) {
     onDone(stamp)
   }
 
-  async function upload(e) {
+  async function pick(e) {
     const f = e.target.files[0]
+    e.target.value = ''
     if (!f) return
     try {
-      use(await imageToStamp(f))
+      setUpload({ img: await loadImage(f), threshold: 200 })
     } catch (err) {
       alert(err.message)
     }
+  }
+
+  function useUpload() {
+    const c = cutPaper(upload.img, upload.threshold)
+    URL.revokeObjectURL(upload.img.src)
+    use(toStamp(c.toDataURL('image/png'), c.width, c.height))
   }
 
   const pos = (e) => {
@@ -95,12 +108,44 @@ export default function SignaturePad({ onDone, onCancel }) {
     dirty.current = false
   }
 
+  const keepBox = (
+    <label className="keep">
+      <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} /> บันทึกลายเซ็นไว้ใช้ครั้งหน้า
+    </label>
+  )
+
+  if (upload)
+    return (
+      <div className="modal" onKeyDown={(e) => e.key === 'Escape' && setUpload(null)}>
+        <div className="pad">
+          <h3>ปรับรูปลายเซ็น</h3>
+          <canvas ref={preview} className="checker" style={{ maxWidth: 400, maxHeight: 220, cursor: 'default' }} />
+          <label className="field">
+            ความไวในการตัดพื้นหลัง: {255 - upload.threshold}
+            <input
+              type="range"
+              min="0"
+              max="120"
+              value={255 - upload.threshold}
+              onChange={(e) => setUpload({ ...upload, threshold: 255 - +e.target.value })}
+            />
+          </label>
+          <p className="note">เลื่อนไปทางขวา ถ้ายังเห็นกรอบหรือเงาของกระดาษ · ลายเซ็นจางหายให้เลื่อนกลับ</p>
+          {keepBox}
+          <div className="row end">
+            <button onClick={() => setUpload(null)}>ย้อนกลับ</button>
+            <button className="primary" onClick={useUpload}>ใช้รูปนี้</button>
+          </div>
+        </div>
+      </div>
+    )
+
   return (
     <div className="modal" onKeyDown={(e) => e.key === 'Escape' && onCancel()}>
       <div className="pad">
         {saved.length > 0 && (
           <>
-            <b>ลายเซ็นที่บันทึกไว้ (คลิกเพื่อใช้)</b>
+            <h3>ลายเซ็นที่บันทึกไว้ (คลิกเพื่อใช้)</h3>
             <div className="saved">
               {saved.map((s) => (
                 <div key={s.id} className="sig">
@@ -111,19 +156,17 @@ export default function SignaturePad({ onDone, onCancel }) {
             </div>
           </>
         )}
-        <b>เซ็นใหม่</b>
+        <h3>เซ็นใหม่</h3>
         <canvas ref={ref} width={400} height={150} onPointerDown={down} onPointerMove={move} onPointerUp={() => (drawing.current = false)} />
-        <label className="keep">
-          <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} /> บันทึกลายเซ็นไว้ใช้ครั้งหน้า
-        </label>
-        <div>
+        {keepBox}
+        <div className="row end">
           <label className="btn upload">
             อัปโหลดรูปลายเซ็น
-            <input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={upload} />
+            <input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={pick} />
           </label>
           <button onClick={clear}>ล้าง</button>
           <button onClick={onCancel}>ยกเลิก</button>
-          <button onClick={() => dirty.current && use(toStamp(ref.current.toDataURL('image/png'), 400, 150))}>ใช้ลายเซ็นนี้</button>
+          <button className="primary" onClick={() => dirty.current && use(toStamp(ref.current.toDataURL('image/png'), 400, 150))}>ใช้ลายเซ็นนี้</button>
         </div>
       </div>
     </div>
