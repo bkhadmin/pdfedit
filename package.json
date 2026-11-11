@@ -9,7 +9,7 @@
     "start": "vite build && electron .",
     "dist": "vite build && electron-builder --win --publish never && node scripts/check-packaged.cjs",
     "release": "node scripts/release.cjs",
-    "test": "node test/sign.test.cjs",
+    "test": "node test/sign.test.cjs && node test/placement.test.mjs",
     "build:web": "vite build"
   },
   "build": {

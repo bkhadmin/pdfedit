@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import { PDFDocument } from 'pdf-lib'
+import { PDFDocument, degrees } from 'pdf-lib'
 import SignaturePad from './SignaturePad'
+import { placement } from './placement'
 import CertModal from './CertModal'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
@@ -401,10 +402,10 @@ export default function App() {
   async function buildPdf() {
     const doc = await PDFDocument.load(file.bytes)
     for (const it of items) {
-      const page = doc.getPage(it.page)
-      // shortcut: assumes no page rotation / cropbox offset, map through page.getRotation() if such PDFs show up
-      const box = { x: it.x, y: page.getHeight() - it.y - it.h, width: it.w, height: it.h }
-      page.drawImage(await doc.embedPng(it.src), box)
+      // the same pdf.js viewport the page was shown with, so rotated/cropped pages (common in scans) map correctly
+      const vp = (await pdfRef.current.getPage(it.page + 1)).getViewport({ scale: 1 })
+      const o = placement(vp, it)
+      doc.getPage(it.page).drawImage(await doc.embedPng(it.src), { ...o, rotate: degrees(o.rotate) })
     }
     return doc.save()
   }
