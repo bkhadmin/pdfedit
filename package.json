@@ -1,6 +1,6 @@
 {
   "name": "pdfedit",
-  "version": "0.3.0",
+  "version": "25691111.1.0",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -15,6 +15,7 @@
   "build": {
     "appId": "local.pdfedit",
     "productName": "PDF Edit",
+    "buildVersion": "2569.1111.1.0",
     "directories": {
       "output": "release"
     },
