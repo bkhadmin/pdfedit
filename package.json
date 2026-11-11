@@ -1,6 +1,6 @@
 {
   "name": "pdfedit",
-  "version": "25691111.1.1",
+  "version": "25691111.1.2",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -15,7 +15,7 @@
   "build": {
     "appId": "local.pdfedit",
     "productName": "PDF Edit",
-    "buildVersion": "2569.1111.1.1",
+    "buildVersion": "2569.1111.1.2",
     "directories": {
       "output": "release"
     },
@@ -26,6 +26,11 @@
     "win": {
       "target": "nsis",
       "icon": "public/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
     },
     "publish": {
       "provider": "github",

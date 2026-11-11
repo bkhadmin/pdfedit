@@ -11,4 +11,5 @@ contextBridge.exposeInMainWorld('pdfedit', {
   },
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
+  scan: () => ipcRenderer.invoke('scan'), // -> [{ bytes, dpi }], [] if cancelled
 })

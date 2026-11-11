@@ -17,6 +17,7 @@ const ICONS = {
   print: 'M7 9V3h10v6M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M7 14h10v7H7z',
   save: 'M12 3v12M7 10l5 5 5-5M5 21h14',
   cert: 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6zM9 12l2 2 4-4',
+  scan: 'M7 3h10v6H7zM3 13a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM7 15h4',
 }
 const Icon = ({ name }) => (
   <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -52,6 +53,23 @@ function textToStamp(text, family, size, color = '#000000', bg) {
   return { src: c.toDataURL('image/png'), w: c.width / 3, h: c.height / 3 }
 }
 
+// One page per JPG/PNG. dpi known (scans): the page is the paper's real size. Otherwise the image is
+// fitted, never enlarged, into A4 (landscape if wider than tall) inside 10 mm margins, centered.
+async function addImagePage(doc, { bytes, dpi }) {
+  const img = bytes[0] === 0x89 ? await doc.embedPng(bytes) : await doc.embedJpg(bytes) // PNG files start with 0x89
+  let [w, h] = [img.width, img.height]
+  let W, H
+  if (dpi) {
+    W = w = (w * 72) / dpi
+    H = h = (h * 72) / dpi
+  } else {
+    ;[W, H] = w > h ? [841.89, 595.28] : [595.28, 841.89]
+    const s = Math.min(1, (W - 56.7) / w, (H - 56.7) / h)
+    ;[w, h] = [w * s, h * s]
+  }
+  doc.addPage([W, H]).drawImage(img, { x: (W - w) / 2, y: (H - h) / 2, width: w, height: h })
+}
+
 function download(bytes, name) {
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
@@ -85,6 +103,7 @@ export default function App() {
   const mainRef = useRef(null)
   const openRef = useRef(null)
   const appendRef = useRef(null)
+  const imageRef = useRef(null)
   const history = useRef([]) // snapshots of { file, items } taken before each change
   const lastSnap = useRef({})
   const [appUpdate, setAppUpdate] = useState(null) // { version, percent?, ready? } — desktop auto-update
@@ -153,25 +172,35 @@ export default function App() {
     setItems(s.items)
   }
 
-  // append = add the chosen files after the current document's pages (placed items keep their pages)
   async function openFiles(e, append) {
     // sort by name: the OS file picker returns multi-selections in no reliable order
     const files = [...e.target.files].sort((a, b) => a.name.localeCompare(b.name, 'th', { numeric: true }))
     e.target.value = '' // let the same file be picked again
+    addFiles(await Promise.all(files.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) }))), append)
+  }
+
+  // files: [{ name, bytes, dpi? }], PDFs or JPG/PNG images (one page each).
+  // append = add them after the current document's pages (placed items keep their pages)
+  async function addFiles(files, append) {
     if (!files.length) return
+    const isPdf = ({ bytes: b }) => !(b[0] === 0x89 && b[1] === 0x50) && !(b[0] === 0xff && b[1] === 0xd8) // not PNG/JPEG
     try {
       let bytes
-      if (!append && files.length === 1) bytes = new Uint8Array(await files[0].arrayBuffer())
+      if (!append && files.length === 1 && isPdf(files[0])) bytes = files[0].bytes
       else {
         const doc = append ? await PDFDocument.load(file.bytes) : await PDFDocument.create()
         for (const f of files) {
-          const src = await PDFDocument.load(await f.arrayBuffer())
+          if (!isPdf(f)) {
+            await addImagePage(doc, f)
+            continue
+          }
+          const src = await PDFDocument.load(f.bytes)
           for (const p of await doc.copyPages(src, src.getPageIndices())) doc.addPage(p)
         }
         bytes = await doc.save()
       }
       if (append) snap()
-      await loadPdf({ name: append ? file.name : files[0].name, bytes })
+      await loadPdf({ name: append ? file.name : files[0].name.replace(/\.(jpe?g|png)$/i, '.pdf'), bytes })
       if (!append) {
         setItems([])
         history.current = []
@@ -180,6 +209,19 @@ export default function App() {
     } catch (err) {
       alert('เปิดไฟล์ไม่ได้: ' + err.message)
     }
+  }
+
+  async function scan() {
+    if (busy) return
+    setBusy('กำลังสแกน… ทำต่อในหน้าต่างของเครื่องสแกน')
+    try {
+      const pages = await window.pdfedit.scan()
+      const name = `scan-${new Date().toLocaleDateString('sv')}.pdf` // sv = YYYY-MM-DD
+      await addFiles(pages.map((p) => ({ ...p, name })), !!file)
+    } catch (err) {
+      alert(err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')) // strip Electron IPC prefix
+    }
+    setBusy('')
   }
 
   async function loadPdf(f) {
@@ -430,11 +472,13 @@ export default function App() {
   })
 
   const canCert = !!window.pdfedit // desktop app only (signing runs in Electron's main process)
+  const canScan = !!window.pdfedit?.scan // desktop app only (Windows WIA)
   const newText = () => setEditing({ id: null, value: '' })
   const menus = {
     ไฟล์: [
       { label: 'เปิด PDF…', kbd: 'Ctrl+O', run: () => openRef.current.click() },
       { label: 'เพิ่ม PDF ต่อท้าย…', run: () => appendRef.current.click(), off: !file },
+      { label: 'นำเข้ารูปภาพ…', run: () => imageRef.current.click() },
       '-',
       { label: 'บันทึก', kbd: 'Ctrl+S', run: save, off: !file },
       { label: canCert ? 'บันทึกพร้อมลายเซ็นดิจิทัล…' : 'ลายเซ็นดิจิทัล (เฉพาะโปรแกรม Windows)', run: () => setCertOpen(true), off: !file || !canCert },
@@ -445,6 +489,7 @@ export default function App() {
     แทรก: [
       { label: 'ลายเซ็น…', run: () => setPadOpen(true), off: !file },
       { label: 'ข้อความ…', run: newText, off: !file },
+      ...(canScan ? ['-', { label: 'สแกนเอกสาร…', run: scan, off: !!busy }] : []),
     ],
   }
 
@@ -460,6 +505,7 @@ export default function App() {
     <div className="app">
       <input ref={openRef} type="file" accept="application/pdf" multiple hidden onChange={(e) => openFiles(e, false)} />
       <input ref={appendRef} type="file" accept="application/pdf" multiple hidden onChange={(e) => openFiles(e, true)} />
+      <input ref={imageRef} type="file" accept="image/jpeg,image/png" multiple hidden onChange={(e) => openFiles(e, !!file)} />
 
       <header>
         <div className="titlebar">
@@ -505,6 +551,7 @@ export default function App() {
         <div className="toolbar">
           <Tool icon="open" label="เปิด" onClick={() => openRef.current.click()} />
           <Tool icon="add" label="เพิ่ม PDF" onClick={() => appendRef.current.click()} off={!file} />
+          {canScan && <Tool icon="scan" label="สแกน" onClick={scan} off={!!busy} />}
           <span className="sep" />
           <Tool icon="sign" label="เซ็นชื่อ" onClick={() => setPadOpen(true)} off={!file} />
           <Tool icon="text" label="ข้อความ" onClick={newText} off={!file} />
