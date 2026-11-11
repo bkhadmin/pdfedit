@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "start": "vite build && electron .",
-    "dist": "vite build && electron-builder --win --publish never",
+    "dist": "vite build && electron-builder --win --publish never && node scripts/check-packaged.cjs",
     "release": "node scripts/release.cjs",
     "test": "node test/sign.test.cjs",
     "build:web": "vite build"
@@ -47,6 +47,7 @@
     "@signpdf/signer-p12": "^4.0.0",
     "@signpdf/signpdf": "^4.0.0",
     "electron-updater": "^6.8.11",
+    "node-forge": "^1.4.3",
     "pdf-lib": "^1.17.1"
   }
 }

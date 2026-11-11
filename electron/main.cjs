@@ -1,7 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('path')
 const { autoUpdater } = require('electron-updater')
-const { signPdf } = require('./sign.cjs')
 
 autoUpdater.autoDownload = false // nothing downloads until the user clicks the update button
 ipcMain.handle('download-update', () => autoUpdater.downloadUpdate())
@@ -9,7 +8,8 @@ ipcMain.handle('install-update', () => autoUpdater.quitAndInstall())
 
 ipcMain.handle('sign-pdf', async (_e, args) => {
   try {
-    return await signPdf(args)
+    // loaded on use: a broken signing dependency must not stop the app (or its updater) from starting
+    return await require('./sign.cjs').signPdf(args)
   } catch (err) {
     if (/password|MAC/i.test(err.message)) throw new Error('รหัสผ่านใบรับรองไม่ถูกต้อง')
     if (/ASN\.1|PKCS#12|der/i.test(err.message)) throw new Error('ไฟล์ใบรับรองไม่ถูกต้อง (ต้องเป็น .p12 หรือ .pfx)')

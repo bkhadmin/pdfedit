@@ -22,13 +22,16 @@ if (!token) {
   const api = `https://api.github.com/repos/${owner}/${repo}/releases`
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }
   const tag = 'v' + pkg.version
+  const run = (cmd, env) => execSync(cmd, { stdio: 'inherit', env: { ...process.env, ...env } })
+  run('npm run dist') // build + smoke-test the packaged app; throws (stops the release) before anything is uploaded
   const list = await (await fetch(api, { headers })).json()
   if (!Array.isArray(list)) throw new Error('อ่านรายการ release ไม่ได้: ' + list.message)
   if (!list.some((r) => r.tag_name === tag)) {
     const res = await fetch(api, { method: 'POST', headers, body: JSON.stringify({ tag_name: tag, name: pkg.version, draft: true }) })
     if (!res.ok) throw new Error(`สร้าง draft release ไม่สำเร็จ (${res.status}): ${(await res.json()).message}`)
   }
-  execSync('vite build && electron-builder --win --publish always', { stdio: 'inherit', env: { ...process.env, GH_TOKEN: token } })
+  // publish exactly the bits that were just tested
+  run('electron-builder --win --prepackaged release/win-unpacked --publish always', { GH_TOKEN: token })
 })().catch((err) => {
   console.error(err.message)
   process.exit(1)
