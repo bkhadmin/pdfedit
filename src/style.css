@@ -26,3 +26,13 @@ button.danger { margin-right: auto; color: #c00; }
 .keep { font-size: 13px; color: #444; }
 .upload { margin-right: auto; }
 .btn.disabled { opacity: .5; cursor: default; }
+.body { display: flex; align-items: flex-start; }
+.body main { flex: 1; min-width: 0; }
+.thumbs { position: sticky; top: 49px; height: calc(100vh - 49px); overflow-y: auto; box-sizing: border-box; width: 150px; flex-shrink: 0; padding: 12px; display: flex; flex-direction: column; gap: 12px; background: #d6d6d6; }
+.thumb { background: #fff; padding: 4px; border-radius: 4px; cursor: grab; box-shadow: 0 1px 3px #0003; }
+.thumb:hover { outline: 2px solid #36f; }
+.thumb canvas { display: block; width: 100%; height: auto; }
+.thumb-bar { display: flex; align-items: center; gap: 2px; margin-top: 4px; font-size: 12px; }
+.thumb-bar span { margin-right: auto; padding-left: 2px; }
+.thumb-bar button { padding: 0 6px; font-size: 11px; line-height: 18px; }
+.thumb-bar button.danger { margin-right: 0; }

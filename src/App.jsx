@@ -33,10 +33,12 @@ export default function App() {
   const [fonts, setFonts] = useState(FALLBACK_FONTS)
   const [font, setFont] = useState('Tahoma')
   const [size, setSize] = useState(16)
-  const [editing, setEditing] = useState(null) // { page, line, value }
+  const [editing, setEditing] = useState(null) // { id, value } of the text item open in the modal
   const [padOpen, setPadOpen] = useState(false)
   const pdfRef = useRef(null)
   const canvases = useRef([])
+  const thumbs = useRef([])
+  const dragPage = useRef(null)
   const drag = useRef(null)
   const mainRef = useRef(null)
 
@@ -71,33 +73,79 @@ export default function App() {
         }
         bytes = await doc.save()
       }
-      const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise // pdf.js detaches its buffer
-      const out = []
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const vp = (await pdf.getPage(i)).getViewport({ scale: 1 })
-        out.push({ w: vp.width, h: vp.height })
-      }
-      pdfRef.current = pdf
-      setFile({ name: append ? file.name : files[0].name, bytes })
+      await loadPdf(append ? file.name : files[0].name, bytes)
       if (!append) setItems([])
-      setEditing(null)
-      setPages(out)
     } catch (err) {
       alert('เปิดไฟล์ไม่ได้: ' + err.message)
     }
   }
 
+  async function loadPdf(name, bytes) {
+    const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise // pdf.js detaches its buffer
+    const out = []
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const vp = (await pdf.getPage(i)).getViewport({ scale: 1 })
+      out.push({ w: vp.width, h: vp.height })
+    }
+    pdfRef.current = pdf
+    setFile({ name, bytes })
+    setEditing(null)
+    setPages(out)
+  }
+
+  // order = old page indices in their new order; indices left out are deleted
+  async function rearrange(order) {
+    try {
+      const doc = await PDFDocument.load(file.bytes)
+      const all = doc.getPages()
+      for (let i = all.length - 1; i >= 0; i--) doc.removePage(i)
+      for (const o of order) doc.addPage(all[o]) // re-adding the same page objects keeps links/annotations
+      await loadPdf(file.name, await doc.save())
+      setItems((its) => its.filter((it) => order.includes(it.page)).map((it) => ({ ...it, page: order.indexOf(it.page) })))
+    } catch (err) {
+      alert('จัดหน้าไม่สำเร็จ: ' + err.message)
+    }
+  }
+
+  function movePage(from, to) {
+    if (from === to || to < 0 || to >= pages.length) return
+    const order = pages.map((_, i) => i)
+    order.splice(to, 0, order.splice(from, 1)[0])
+    rearrange(order)
+  }
+
+  function deletePage(i) {
+    if (confirm(`ลบหน้า ${i + 1}? (ลายเซ็น/ข้อความบนหน้านี้จะหายด้วย)`)) rearrange(pages.map((_, j) => j).filter((j) => j !== i))
+  }
+
   useEffect(() => {
     const pdf = pdfRef.current
     if (!pdf) return
+    let stale = false
+    const tasks = []
     pages.forEach(async (_, i) => {
       const page = await pdf.getPage(i + 1)
+      if (stale) return
       const vp = page.getViewport({ scale: SCALE })
       const c = canvases.current[i]
       c.width = vp.width
       c.height = vp.height
-      await page.render({ canvas: c, viewport: vp }).promise
+      const task = page.render({ canvas: c, viewport: vp })
+      tasks.push(task)
+      try {
+        await task.promise
+      } catch {
+        return // cancelled by a newer render after reorder/append
+      }
+      const t = thumbs.current[i]
+      t.width = 100
+      t.height = Math.round((c.height * 100) / c.width)
+      t.getContext('2d').drawImage(c, 0, 0, t.width, t.height)
     })
+    return () => {
+      stale = true
+      tasks.forEach((t) => t.cancel())
+    }
   }, [pages])
 
   const add = (...its) => setItems((old) => [...old, ...its.map((it) => ({ ...it, id: crypto.randomUUID() }))])
@@ -198,9 +246,34 @@ export default function App() {
         <span className="hint">{hint}</span>
       </header>
 
+      <div className="body">
+      {pages.length > 0 && (
+        <aside className="thumbs">
+          {pages.map((_, i) => (
+            <div
+              key={i}
+              className="thumb"
+              draggable
+              title="ลากเพื่อสลับลำดับ · คลิกเพื่อไปที่หน้านี้"
+              onDragStart={() => (dragPage.current = i)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => movePage(dragPage.current, i)}
+              onClick={() => document.getElementById('page-' + i).scrollIntoView({ behavior: 'smooth' })}
+            >
+              <canvas ref={(el) => (thumbs.current[i] = el)} />
+              <div className="thumb-bar" onClick={(e) => e.stopPropagation()}>
+                <span>{i + 1}</span>
+                <button title="เลื่อนขึ้น" disabled={i === 0} onClick={() => movePage(i, i - 1)}>▲</button>
+                <button title="เลื่อนลง" disabled={i === pages.length - 1} onClick={() => movePage(i, i + 1)}>▼</button>
+                <button title="ลบหน้า" className="danger" disabled={pages.length === 1} onClick={() => deletePage(i)}>×</button>
+              </div>
+            </div>
+          ))}
+        </aside>
+      )}
       <main ref={mainRef} onPointerMove={onPointerMove} onPointerUp={() => drag.current && (drag.current.done = true)}>
         {pages.map((p, i) => (
-          <div key={i} className={'page' + (stamp ? ' placing' : '')} style={{ width: p.w * SCALE, height: p.h * SCALE }} onClick={(e) => onPageClick(e, i)}>
+          <div key={i} id={'page-' + i} className={'page' + (stamp ? ' placing' : '')} style={{ width: p.w * SCALE, height: p.h * SCALE }} onClick={(e) => onPageClick(e, i)}>
             <canvas ref={(el) => (canvases.current[i] = el)} />
             {items.filter((it) => it.page === i).map((it) => (
               <img
@@ -230,6 +303,7 @@ export default function App() {
           </div>
         ))}
       </main>
+      </div>
 
       {editing && (
         <div className="modal" onKeyDown={(e) => e.key === 'Escape' && setEditing(null)}>
