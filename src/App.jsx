@@ -10,8 +10,8 @@ const FALLBACK_FONTS = ['Tahoma', 'Leelawadee UI', 'Angsana New', 'Cordia New', 
 
 // Text becomes a PNG so any installed font works, Thai included (pdf-lib standard fonts have no Thai glyphs).
 // shortcut: text isn't selectable/searchable in the output, embed the TTF via @pdf-lib/fontkit if needed.
-// Baseline sits at 1.1 * size from the stamp's top.
-function textToStamp(text, family, size) {
+// Baseline sits at 1.1 * size from the stamp's top. bg = optional solid background color.
+function textToStamp(text, family, size, bg) {
   const px = size * 3 // render at 3x for print quality
   const font = `${px}px "${family}"`
   const c = document.createElement('canvas')
@@ -19,6 +19,11 @@ function textToStamp(text, family, size) {
   ctx.font = font
   c.width = Math.ceil(ctx.measureText(text).width + px * 0.2)
   c.height = Math.ceil(px * 1.5)
+  if (bg) {
+    ctx.fillStyle = bg
+    ctx.fillRect(0, 0, c.width, c.height)
+    ctx.fillStyle = '#000'
+  }
   ctx.font = font
   ctx.fillText(text, px * 0.1, px * 1.1)
   return { src: c.toDataURL('image/png'), w: c.width / 3, h: c.height / 3 }
@@ -27,12 +32,13 @@ function textToStamp(text, family, size) {
 export default function App() {
   const [file, setFile] = useState(null) // { name, bytes }
   const [pages, setPages] = useState([]) // [{ w, h }] in PDF points
-  const [items, setItems] = useState([]) // [{ id, page, x, y, w, h, src, text?, font?, size? }] PDF points, y from top; text set = editable text
+  const [items, setItems] = useState([]) // [{ id, page, x, y, w, h, src, text?, font?, size?, cover? }] PDF points, y from top; text set = editable text
   const [stamp, setStamp] = useState(null) // stamp waiting to be placed by click
   const [text, setText] = useState('')
   const [fonts, setFonts] = useState(FALLBACK_FONTS)
   const [font, setFont] = useState('Tahoma')
   const [size, setSize] = useState(16)
+  const [cover, setCover] = useState(false) // opaque text background matching the PDF underneath
   const [editing, setEditing] = useState(null) // { id, value } of the text item open in the modal
   const [padOpen, setPadOpen] = useState(false)
   const pdfRef = useRef(null)
@@ -156,22 +162,54 @@ export default function App() {
     const r = e.currentTarget.getBoundingClientRect()
     const px = (e.clientX - r.left) / SCALE
     const py = (e.clientY - r.top) / SCALE
-    add({ ...stamp, page, x: px - stamp.w / 2, y: py - stamp.h / 2 })
+    const it = { ...stamp, page, x: px - stamp.w / 2, y: py - stamp.h / 2 }
+    add(it.cover ? { ...it, ...renderText(it) } : it) // background color is only known once placed
     setStamp(null)
   }
 
-  const textStamp = (value) => ({ ...textToStamp(value, font, size), text: value, font, size })
+  // Most common color of the rendered page under a box (PDF points) — the paper, since glyphs cover little area.
+  function sampleBg(page, x, y, w, h) {
+    const c = canvases.current[page]
+    const x0 = Math.max(0, Math.floor(x * SCALE))
+    const y0 = Math.max(0, Math.floor(y * SCALE))
+    const x1 = Math.min(c.width, Math.ceil((x + w) * SCALE))
+    const y1 = Math.min(c.height, Math.ceil((y + h) * SCALE))
+    if (x1 <= x0 || y1 <= y0) return '#fff'
+    const p = c.getContext('2d').getImageData(x0, y0, x1 - x0, y1 - y0).data
+    const count = new Map()
+    let best = 0
+    let color = '#fff'
+    for (let i = 0; i < p.length; i += 4) {
+      const key = ((p[i] >> 3) << 10) | ((p[i + 1] >> 3) << 5) | (p[i + 2] >> 3) // bucket near-identical shades
+      const n = (count.get(key) || 0) + 1
+      count.set(key, n)
+      if (n > best) [best, color] = [n, `rgb(${p[i]},${p[i + 1]},${p[i + 2]})`]
+    }
+    return color
+  }
+
+  // PNG fields for a text item; with cover on, background = the PDF's color at the item's current spot
+  function renderText(o) {
+    const s = textToStamp(o.text, o.font, o.size)
+    return o.cover ? textToStamp(o.text, o.font, o.size, sampleBg(o.page, o.x, o.y, s.w, s.h)) : s
+  }
+
+  const textStamp = (value) => ({ ...textToStamp(value, font, size), text: value, font, size, cover })
   const remove = (id) => setItems((its) => its.filter((o) => o.id !== id))
 
   function startEdit(it) {
     setFont(it.font)
     setSize(it.size)
+    setCover(!!it.cover)
     setEditing({ id: it.id, value: it.text })
   }
 
   function commitEdit() {
     const { id, value } = editing
-    if (value.trim()) update(id, () => textStamp(value)) // keeps x/y, re-renders with new font/size
+    if (value.trim()) update(id, (o) => {
+      const n = { ...o, text: value, font, size, cover } // keeps x/y
+      return { ...n, ...renderText(n) }
+    })
     else remove(id)
     setEditing(null)
   }
@@ -188,6 +226,12 @@ export default function App() {
     const dy = e.clientY - d.sy
     if (Math.hypot(dx, dy) > 3) d.moved = true // a real drag shouldn't also open the edit modal
     update(d.id, () => ({ x: d.x + dx / SCALE, y: d.y + dy / SCALE }))
+  }
+  function onPointerUp() {
+    const d = drag.current
+    if (!d || d.done) return
+    d.done = true
+    if (d.moved) update(d.id, (o) => (o.cover ? renderText(o) : {})) // re-sample background at the new spot
   }
 
   async function save() {
@@ -219,6 +263,11 @@ export default function App() {
   const sizePicker = (
     <input type="number" min="4" max="200" value={size} onChange={(e) => setSize(Math.max(4, +e.target.value || 4))} title="ขนาด (pt)" style={{ width: 56 }} />
   )
+  const coverPicker = (
+    <label className="keep" title="ปิดของเดิมใต้ข้อความ ด้วยสีพื้นของเอกสารตรงจุดที่วาง">
+      <input type="checkbox" checked={cover} onChange={(e) => setCover(e.target.checked)} /> พื้นหลังทึบ
+    </label>
+  )
 
   const hint = stamp
     ? 'คลิกบนหน้าเอกสารเพื่อวาง'
@@ -240,6 +289,7 @@ export default function App() {
         <button disabled={!file} onClick={() => setPadOpen(true)}>เซ็นชื่อ</button>
         {fontPicker}
         {sizePicker}
+        {coverPicker}
         <input disabled={!file} value={text} placeholder="ข้อความ" onChange={(e) => setText(e.target.value)} />
         <button disabled={!file || !text} onClick={() => setStamp(textStamp(text))}>วางข้อความ</button>
         <button disabled={!file} onClick={save}>บันทึก</button>
@@ -271,7 +321,7 @@ export default function App() {
           ))}
         </aside>
       )}
-      <main ref={mainRef} onPointerMove={onPointerMove} onPointerUp={() => drag.current && (drag.current.done = true)}>
+      <main ref={mainRef} onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
         {pages.map((p, i) => (
           <div key={i} id={'page-' + i} className={'page' + (stamp ? ' placing' : '')} style={{ width: p.w * SCALE, height: p.h * SCALE }} onClick={(e) => onPageClick(e, i)}>
             <canvas ref={(el) => (canvases.current[i] = el)} />
@@ -294,7 +344,7 @@ export default function App() {
                     if (!o.text) return { w: o.w * (up ? 1.1 : 1 / 1.1), h: o.h * (up ? 1.1 : 1 / 1.1) }
                     // text: re-render at the new size instead of stretching the PNG, so it stays sharp
                     const size = Math.min(200, Math.max(4, o.size + (up ? 1 : -1)))
-                    return { ...textToStamp(o.text, o.font, size), size }
+                    return { ...renderText({ ...o, size }), size }
                   })
                 }}
                 onDoubleClick={() => !it.text && remove(it.id)}
@@ -309,7 +359,7 @@ export default function App() {
         <div className="modal" onKeyDown={(e) => e.key === 'Escape' && setEditing(null)}>
           <form className="pad edit-modal" onSubmit={(e) => { e.preventDefault(); commitEdit() }}>
             <b>แก้ข้อความ</b>
-            <div>{fontPicker}{sizePicker}</div>
+            <div>{fontPicker}{sizePicker}{coverPicker}</div>
             <input
               autoFocus
               value={editing.value}
