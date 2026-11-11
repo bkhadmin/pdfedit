@@ -55,19 +55,20 @@ npm run build:web
 
 ## ออกเวอร์ชันใหม่ (release + auto-update)
 
-1. เปลี่ยนเวอร์ชันใน package.json:
+เลขเวอร์ชันใช้รูปแบบ `<วันที่ พ.ศ. YYYYMMDD>.<ลำดับ>.<patch>` เช่น `25691111.1.0`
+
+1. เปลี่ยนเวอร์ชันใน package.json และตั้ง `build.buildVersion` เป็นรูปแบบที่ Windows รับได้ (แต่ละส่วน ≤ 65535) เช่น `2569.1111.1.0`:
    ```bash
    npm version <x.y.z> --no-git-tag-version
    ```
 2. commit การเปลี่ยนแปลง แล้วสร้างและ push tag:
    ```bash
    git tag v<x.y.z>
-   git push && git push origin v<x.y.z>
+   git push origin master --tags
    ```
-3. ตั้ง environment variable `GH_TOKEN` เป็น GitHub personal access token ที่มีสิทธิ์ `repo` (PowerShell):
-   ```powershell
-   $env:GH_TOKEN="ghp_..."
-   ```
+3. ครั้งแรกครั้งเดียว: สร้าง fine-grained token (Repository access: `bkhadmin/pdfedit`, Contents: Read and write)
+   แล้ววางค่า token ไว้ในไฟล์ `.release-token` ที่ root ของโปรเจกต์ (ไฟล์นี้อยู่ใน .gitignore ไม่ถูก push)
+   — โปรเจกต์นี้**ไม่ใช้** `GH_TOKEN` ของระบบ เพื่อไม่ให้ชนกับโปรเจกต์อื่นที่ใช้ `GH_TOKEN`
 4. รันคำสั่ง release ซึ่ง build installer และอัปโหลด installer กับ `latest.yml` ขึ้น GitHub Release:
    ```bash
    npm run release

@@ -8,7 +8,7 @@
     "dev": "vite",
     "start": "vite build && electron .",
     "dist": "vite build && electron-builder --win --publish never",
-    "release": "vite build && electron-builder --win --publish always",
+    "release": "node scripts/release.cjs",
     "test": "node test/sign.test.cjs",
     "build:web": "vite build"
   },
