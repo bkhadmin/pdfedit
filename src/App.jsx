@@ -54,11 +54,23 @@ export default function App() {
       .catch(() => {}) // keep fallback list (e.g. plain browser without permission)
   }, [])
 
-  async function openFile(e) {
-    const f = e.target.files[0]
-    if (!f) return
+  // append = add the chosen files after the current document's pages (placed items keep their pages)
+  async function openFiles(e, append) {
+    // sort by name: the OS file picker returns multi-selections in no reliable order
+    const files = [...e.target.files].sort((a, b) => a.name.localeCompare(b.name, 'th', { numeric: true }))
+    e.target.value = '' // let the same file be picked again
+    if (!files.length) return
     try {
-      const bytes = new Uint8Array(await f.arrayBuffer())
+      let bytes
+      if (!append && files.length === 1) bytes = new Uint8Array(await files[0].arrayBuffer())
+      else {
+        const doc = append ? await PDFDocument.load(file.bytes) : await PDFDocument.create()
+        for (const f of files) {
+          const src = await PDFDocument.load(await f.arrayBuffer())
+          for (const p of await doc.copyPages(src, src.getPageIndices())) doc.addPage(p)
+        }
+        bytes = await doc.save()
+      }
       const pdf = await pdfjs.getDocument({ data: bytes.slice() }).promise // pdf.js detaches its buffer
       const out = []
       for (let i = 1; i <= pdf.numPages; i++) {
@@ -66,8 +78,8 @@ export default function App() {
         out.push({ w: vp.width, h: vp.height })
       }
       pdfRef.current = pdf
-      setFile({ name: f.name, bytes })
-      setItems([])
+      setFile({ name: append ? file.name : files[0].name, bytes })
+      if (!append) setItems([])
       setEditing(null)
       setPages(out)
     } catch (err) {
@@ -171,7 +183,11 @@ export default function App() {
       <header>
         <label className="btn">
           เปิด PDF
-          <input type="file" accept="application/pdf" hidden onChange={openFile} />
+          <input type="file" accept="application/pdf" multiple hidden onChange={(e) => openFiles(e, false)} />
+        </label>
+        <label className={'btn' + (file ? '' : ' disabled')} title="ต่อไฟล์ PDF อื่นท้ายเอกสารนี้ (เลือกได้หลายไฟล์ เรียงตามชื่อไฟล์)">
+          เพิ่ม PDF
+          <input type="file" accept="application/pdf" multiple hidden disabled={!file} onChange={(e) => openFiles(e, true)} />
         </label>
         <button disabled={!file} onClick={() => setPadOpen(true)}>เซ็นชื่อ</button>
         {fontPicker}

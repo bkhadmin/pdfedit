@@ -25,3 +25,4 @@ button.danger { margin-right: auto; color: #c00; }
 .sig button { position: absolute; top: -8px; right: -8px; padding: 0 6px; border-radius: 50%; color: #c00; line-height: 18px; }
 .keep { font-size: 13px; color: #444; }
 .upload { margin-right: auto; }
+.btn.disabled { opacity: .5; cursor: default; }
