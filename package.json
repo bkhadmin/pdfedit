@@ -1,13 +1,14 @@
 {
   "name": "pdfedit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "start": "vite build && electron .",
-    "dist": "vite build && electron-builder --win",
+    "dist": "vite build && electron-builder --win --publish never",
+    "release": "vite build && electron-builder --win --publish always",
     "test": "node test/sign.test.cjs",
     "build:web": "vite build"
   },
@@ -25,7 +26,11 @@
       "target": "nsis",
       "icon": "public/icon.png"
     },
-    "publish": null
+    "publish": {
+      "provider": "github",
+      "owner": "bkhadmin",
+      "repo": "pdfedit"
+    }
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.3.0",
@@ -40,6 +45,7 @@
     "@signpdf/placeholder-pdf-lib": "^4.0.0",
     "@signpdf/signer-p12": "^4.0.0",
     "@signpdf/signpdf": "^4.0.0",
+    "electron-updater": "^6.8.11",
     "pdf-lib": "^1.17.1"
   }
 }

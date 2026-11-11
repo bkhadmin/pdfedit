@@ -87,6 +87,32 @@ export default function App() {
   const appendRef = useRef(null)
   const history = useRef([]) // snapshots of { file, items } taken before each change
   const lastSnap = useRef({})
+  const [appUpdate, setAppUpdate] = useState(null) // { version, percent?, ready? } — desktop auto-update
+  const updateClicked = useRef(false)
+
+  useEffect(
+    () =>
+      window.pdfedit?.onUpdate((u) => {
+        if (u.type === 'available') setAppUpdate({ version: u.version })
+        else if (u.type === 'progress') setAppUpdate((x) => x && { ...x, percent: u.percent })
+        else if (u.type === 'downloaded') setAppUpdate((x) => x && { ...x, ready: true })
+        else if (u.type === 'error') {
+          // startup check failures (offline, no releases) are normal: only report errors after the user clicked
+          console.log('update error:', u.message)
+          if (updateClicked.current) alert('อัปเดตไม่สำเร็จ กรุณาลองใหม่ภายหลัง')
+          updateClicked.current = false
+          setAppUpdate(null)
+        }
+      }),
+    [],
+  )
+
+  const runUpdate = () => {
+    if (appUpdate.ready) return window.pdfedit.installUpdate()
+    updateClicked.current = true
+    setAppUpdate({ ...appUpdate, percent: 0 })
+    window.pdfedit.downloadUpdate().catch(() => {}) // failures also arrive as an 'error' event
+  }
 
   // React's onWheel is passive, so stop the page scrolling here while resizing an item
   useEffect(() => {
@@ -469,6 +495,11 @@ export default function App() {
               </div>
             ))}
           </nav>
+          {appUpdate && (
+            <button className="update" onClick={runUpdate} disabled={appUpdate.percent !== undefined && !appUpdate.ready}>
+              {appUpdate.ready ? 'ติดตั้งและเปิดใหม่' : appUpdate.percent !== undefined ? `กำลังดาวน์โหลด ${appUpdate.percent}%` : `อัปเดตเป็น v${appUpdate.version}`}
+            </button>
+          )}
           {file && <span className="filename">{file.name}</span>}
         </div>
         <div className="toolbar">

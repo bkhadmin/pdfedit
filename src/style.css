@@ -36,6 +36,9 @@ header { background: var(--panel); border-bottom: 1px solid var(--line); z-index
 .dropdown button:hover:not(:disabled) { background: var(--accent-soft); }
 .dropdown kbd { font: 12px inherit; color: var(--muted); }
 .dropdown hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+button.update { margin-left: auto; padding: 3px 12px; background: #facc15; border-color: #eab308; color: #1f2937; font-weight: 600; }
+button.update:hover:not(:disabled) { background: #eab308; border-color: #ca8a04; }
+.update + .filename { margin-left: 0; }
 .filename { margin-left: auto; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
 .toolbar { display: flex; align-items: center; gap: 4px; padding: 6px 12px; flex-wrap: wrap; }
 .tool { border-color: transparent; background: none; }
