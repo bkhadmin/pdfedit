@@ -18,3 +18,10 @@ select { padding: 5px; font-size: 14px; max-width: 180px; }
 .item.text { cursor: pointer; }
 .item.text:hover { outline: 1px solid #36f; background: #36f1; }
 button.danger { margin-right: auto; color: #c00; }
+.pad .saved { justify-content: flex-start; flex-wrap: wrap; max-width: 400px; max-height: 220px; overflow-y: auto; }
+.pad .sig { position: relative; border: 1px solid #ccc; border-radius: 4px; padding: 4px; }
+.sig img { display: block; height: 50px; max-width: 180px; cursor: pointer; }
+.sig:hover { border-color: #36f; }
+.sig button { position: absolute; top: -8px; right: -8px; padding: 0 6px; border-radius: 50%; color: #c00; line-height: 18px; }
+.keep { font-size: 13px; color: #444; }
+.upload { margin-right: auto; }

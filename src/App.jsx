@@ -238,9 +238,9 @@ export default function App() {
       {padOpen && (
         <SignaturePad
           onCancel={() => setPadOpen(false)}
-          onDone={(src) => {
+          onDone={({ src, w, h }) => {
             setPadOpen(false)
-            setStamp({ src, w: 160, h: 60 })
+            setStamp({ src, w, h })
           }}
         />
       )}
