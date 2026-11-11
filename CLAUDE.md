@@ -28,4 +28,4 @@ Before every release (`npm run release`, bumping `version`, or creating a `v*` t
 - Claude's shell sets `ELECTRON_RUN_AS_NODE=1`; prefix Electron commands with `env -u ELECTRON_RUN_AS_NODE`.
 - Close any running "PDF Edit" process before `npm run dist` (EPERM on release/win-unpacked).
 - Runtime deps used only by the renderer (react, pdfjs-dist) stay in devDependencies (Vite bundles them). Anything `require`d by `electron/` must be in dependencies.
-- Users talk in Thai; UI text is Thai.
+- **Always reply to the user in Thai only.** UI text is Thai. (Code, commits and paths may be English.)
