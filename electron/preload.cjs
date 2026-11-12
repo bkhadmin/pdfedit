@@ -11,5 +11,6 @@ contextBridge.exposeInMainWorld('pdfedit', {
   },
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
-  scan: () => ipcRenderer.invoke('scan'), // -> [{ bytes, dpi }], [] if cancelled
+  listScanners: () => ipcRenderer.invoke('list-scanners'), // -> [{ id, name }] usable, [{ name, reason }] unusable
+  scan: (deviceId) => ipcRenderer.invoke('scan', deviceId), // -> [{ bytes, dpi }], [] if cancelled
 })

@@ -8,6 +8,7 @@ import CertModal from './CertModal'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 const SCALE = 1.5 // screen px per PDF point
+const SCANNER_KEY = 'pdfedit.scanner' // last used scanner's WIA DeviceID
 const FALLBACK_FONTS = ['Tahoma', 'Leelawadee UI', 'Angsana New', 'Cordia New', 'TH Sarabun New', 'Arial']
 const ICONS = {
   open: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
@@ -93,6 +94,7 @@ export default function App() {
   const [editing, setEditing] = useState(null) // { id (null = new text), value }
   const [padOpen, setPadOpen] = useState(false)
   const [certOpen, setCertOpen] = useState(false)
+  const [picker, setPicker] = useState(null) // { list: listScanners() result, id: chosen } — scanner choice
   const [menu, setMenu] = useState(null)
   const [busy, setBusy] = useState('')
   const [undoCount, setUndoCount] = useState(0)
@@ -212,15 +214,41 @@ export default function App() {
     }
   }
 
+  const ipcError = (err) => alert(err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')) // strip Electron IPC prefix
+
+  // pick the scanner: 1 usable = scan right away, 2+ = ask (last used preselected), 0 = say why
   async function scan() {
     if (busy) return
+    setBusy('กำลังค้นหาเครื่องสแกน…')
+    let list
+    try {
+      list = await window.pdfedit.listScanners()
+    } catch (err) {
+      setBusy('')
+      return ipcError(err)
+    }
+    setBusy('')
+    const ok = list.filter((d) => d.id)
+    if (ok.length === 1) return scanWith(ok[0].id)
+    if (ok.length) {
+      let last = null
+      try { last = localStorage.getItem(SCANNER_KEY) } catch {} // storage can be unavailable
+      return setPicker({ list, id: ok.some((d) => d.id === last) ? last : ok[0].id })
+    }
+    alert('ไม่พบเครื่องสแกน กรุณาเชื่อมต่อและเปิดเครื่องสแกนก่อน' +
+      (list.length ? '\n\nพบอุปกรณ์ที่ใช้สแกนไม่ได้:\n' + list.map((d) => `• ${d.name}: ${d.reason}`).join('\n') : ''))
+  }
+
+  async function scanWith(id) {
+    setPicker(null)
+    try { localStorage.setItem(SCANNER_KEY, id) } catch {}
     setBusy('กำลังสแกน… ทำต่อในหน้าต่างของเครื่องสแกน')
     try {
-      const pages = await window.pdfedit.scan()
+      const pages = await window.pdfedit.scan(id)
       const name = `scan-${new Date().toLocaleDateString('sv')}.pdf` // sv = YYYY-MM-DD
       await addFiles(pages.map((p) => ({ ...p, name })), !!file)
     } catch (err) {
-      alert(err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')) // strip Electron IPC prefix
+      ipcError(err)
     }
     setBusy('')
   }
@@ -674,6 +702,25 @@ export default function App() {
             setStamp({ src, w, h })
           }}
         />
+      )}
+
+      {picker && (
+        <div className="modal" onKeyDown={(e) => e.key === 'Escape' && setPicker(null)}>
+          <form className="pad edit-modal" onSubmit={(e) => { e.preventDefault(); scanWith(picker.id) }}>
+            <h3>เลือกเครื่องสแกน</h3>
+            {picker.list.map((d, i) => (
+              <label key={d.id || 'off' + i} className={'keep' + (d.id ? '' : ' off')}>
+                <input type="radio" name="scanner" disabled={!d.id} checked={d.id === picker.id}
+                  onChange={() => setPicker({ ...picker, id: d.id })} autoFocus={d.id === picker.id} />
+                {d.name}{d.reason && ` — ${d.reason}`}
+              </label>
+            ))}
+            <div className="row end">
+              <button type="button" onClick={() => setPicker(null)}>ยกเลิก</button>
+              <button type="submit" className="primary">สแกน</button>
+            </div>
+          </form>
+        </div>
       )}
 
       {certOpen && (

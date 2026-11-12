@@ -31,32 +31,47 @@ const SCAN_ERRORS = {
   '80210064': 'ฝาเครื่องสแกนเปิดอยู่',
 }
 
-// Windows WIA scan via scan.ps1 (no extra deps). Returns [{ bytes, dpi }], empty = cancelled; temp images are deleted.
-ipcMain.handle('scan', async (e) => {
+// Runs an electron/*.ps1 script; returns its tab-separated output lines, throws (Thai) on an "ERR" line.
+async function runPs(script, env, win) {
+  const out = await new Promise((resolve) => {
+    const kill = () => ps.kill() // don't leave a scanner dialog behind when the app closes
+    const ps = execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-STA', '-Command', '-'],
+      { env: { ...process.env, ...env }, windowsHide: true },
+      (err, stdout, stderr) => {
+        win.off('closed', kill)
+        resolve(err && !stdout ? 'ERR\t-\t' + (stderr || err.message) : stdout)
+      },
+    )
+    win.once('closed', kill)
+    // script on stdin (read via fs so it also works from app.asar); -Command - runs a block only after a blank line
+    ps.stdin.end(fs.readFileSync(path.join(__dirname, script), 'utf8') + '\n\n')
+  })
+  const lines = out.split(/\r?\n/).map((l) => l.split('\t'))
+  const err = lines.find((l) => l[0] === 'ERR')
+  if (err) {
+    console.log(script, 'error:', err.join(' '))
+    throw new Error(SCAN_ERRORS[err[1]] || `สแกนไม่สำเร็จ (รหัส ${err[1]})`)
+  }
+  return lines
+}
+
+// -> [{ id, name }] usable WIA scanners, plus [{ name, reason }] Image devices WIA can't use (TWAIN-only or offline)
+ipcMain.handle('list-scanners', async (e) =>
+  (await runPs('scanners.ps1', {}, BrowserWindow.fromWebContents(e.sender))).flatMap(([type, a, b]) =>
+    type === 'DEV' ? [{ id: a, name: b || a }]
+    : type === 'OFF' ? [{ name: a, reason: b === 'OK' ? 'ไม่มีไดรเวอร์ WIA (ใช้ได้เฉพาะ TWAIN)' : 'ออฟไลน์หรือไม่ได้เชื่อมต่อ' }]
+    : [],
+  ),
+)
+
+// Windows WIA scan via scan.ps1 (no extra deps) on the device id from list-scanners.
+// Returns [{ bytes, dpi }], empty = cancelled; temp images are deleted.
+ipcMain.handle('scan', async (e, deviceId) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdfedit-scan-'))
-  const win = BrowserWindow.fromWebContents(e.sender)
   try {
-    const out = await new Promise((resolve) => {
-      const kill = () => ps.kill() // don't leave a scanner dialog behind when the app closes
-      const ps = execFile(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-STA', '-Command', '-'],
-        { env: { ...process.env, PDFEDIT_SCAN_DIR: dir }, windowsHide: true },
-        (err, stdout, stderr) => {
-          win.off('closed', kill)
-          resolve(err && !stdout ? 'ERR\t-\t' + (stderr || err.message) : stdout)
-        },
-      )
-      win.once('closed', kill)
-      // script on stdin (read via fs so it also works from app.asar); -Command - runs a block only after a blank line
-      ps.stdin.end(fs.readFileSync(path.join(__dirname, 'scan.ps1'), 'utf8') + '\n\n')
-    })
-    const lines = out.split(/\r?\n/).map((l) => l.split('\t'))
-    const err = lines.find((l) => l[0] === 'ERR')
-    if (err) {
-      console.log('scan error:', err.join(' '))
-      throw new Error(SCAN_ERRORS[err[1]] || `สแกนไม่สำเร็จ (รหัส ${err[1]})`)
-    }
+    const lines = await runPs('scan.ps1', { PDFEDIT_SCAN_DIR: dir, PDFEDIT_SCAN_DEVICE: String(deviceId) }, BrowserWindow.fromWebContents(e.sender))
     return lines.filter((l) => l[0] === 'PAGE').map(([, f, dpi]) => ({ bytes: fs.readFileSync(f), dpi: +dpi || 0 }))
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

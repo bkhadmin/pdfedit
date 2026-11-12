@@ -1,5 +1,6 @@
-# Scan with Windows WIA; run by electron/main.cjs (script on stdin, output folder in $env:PDFEDIT_SCAN_DIR).
-# The driver's own dialogs pick the device and settings; a feeder scan repeats until the tray is empty.
+# Scan with Windows WIA; run by electron/main.cjs (script on stdin, output folder in $env:PDFEDIT_SCAN_DIR,
+# WIA DeviceID from scanners.ps1 in $env:PDFEDIT_SCAN_DEVICE). The driver's own dialog picks the settings;
+# a feeder scan repeats until the tray is empty.
 # Prints one "PAGE<tab>file<tab>dpi" line per page, or "ERR<tab>hresult<tab>message" on failure; cancel prints nothing.
 $ErrorActionPreference = 'Stop'
 $JPEG = '{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}'
@@ -12,8 +13,10 @@ try {
   $owner = New-Object Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false; FormBorderStyle = 'None'; Opacity = 0; StartPosition = 'Manual'; Location = '-200,-200'; Size = '1,1' }
   $owner.Show(); $owner.Activate()
   $dlg = New-Object -ComObject WIA.CommonDialog
-  $dev = $dlg.ShowSelectDevice(1, $false, $false) # 1 = scanner; picks the only one without asking
+  $dev = $null
+  foreach ($d in (New-Object -ComObject WIA.DeviceManager).DeviceInfos) { if ($d.DeviceID -eq $env:PDFEDIT_SCAN_DEVICE) { $dev = $d.Connect() } }
   if ($dev) { $items = $dlg.ShowSelectItems($dev, 0, 0, $true, $true, $false) }
+  else { "ERR`t80210015`tdevice not found" } # unplugged since it was listed
   if ($items) {
     $item = $items.Item(1)
     $feeder = $false # Document Handling Select (3088) bit 1 = feeder; set on the device (WIA 1) or the item (WIA 2)
